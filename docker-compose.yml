@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  prd_builder_app:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./system_message.md:/app/system_message.md # Mount the system message for easy updates
+      # You might want to add a volume for logs or other persistent data if needed in the future
+    environment:
+      - NODE_ENV=production
+      - OLLAMA_API_URL=http://host.docker.internal:11434 # Default for Docker Desktop, adjust if your Ollama runs elsewhere
+    # If Ollama is running as another Docker container on the same network, you'd use its service name:
+    # - OLLAMA_API_URL=http://ollama:11434

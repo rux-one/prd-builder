@@ -89,16 +89,15 @@ async function getConversation(sessionId: string): Promise<ConversationState> {
   return conversationStore[sessionId];
 }
 
-async function callOllama(messages: ChatMessage[]): Promise<string> {
-  console.log(`Sending request to Ollama at ${OLLAMA_API_URL}/api/chat`);
+async function* callOllama(messages: ChatMessage[]): AsyncGenerator<string, void, unknown> {
+  console.log(`Sending request to Ollama at ${OLLAMA_API_URL}/api/chat for streaming`);
   try {
     const ollamaRequest: OllamaRequest = {
-      model: 'qwen2:1.5b', // User mentioned qwen3:4b. Using a smaller, common model.
+      model: 'qwen3:4b',
       messages: messages,
-      stream: false,
+      stream: true,
     };
 
-    // Note: node-fetch v2 (CJS) is used as per package.json
     const response = await fetch(`${OLLAMA_API_URL}/api/chat`, {
       method: 'POST',
       headers: {
@@ -109,15 +108,55 @@ async function callOllama(messages: ChatMessage[]): Promise<string> {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.error(`Ollama API error: ${response.status} ${response.statusText}`, errorBody);
+      console.error(`Ollama API error (stream): ${response.status} ${response.statusText}`, errorBody);
       throw new Error(`Ollama API request failed with status ${response.status}: ${errorBody}`);
     }
 
-    const data = (await response.json()) as OllamaResponse;
-    console.log('Received response from Ollama:', data);
-    return data.message.content;
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    // Przetwarzanie strumienia Node.js
+    // response.body to NodeJS.ReadableStream
+    let previousChunkPartialLine = ''; // Bufor na niekompletne linie JSON z poprzednich chunków danych
+    for await (const chunkData of response.body) {
+      const decodedChunk = previousChunkPartialLine + Buffer.from(chunkData as Buffer).toString('utf-8');
+      const lines = decodedChunk.split('\n');
+      
+      // Ostatnia linia może być niekompletna, więc zachowujemy ją na później
+      previousChunkPartialLine = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.trim() === '') continue;
+        try {
+          const chunk = JSON.parse(line) as OllamaResponse;
+          if (chunk.message && chunk.message.content) {
+            yield chunk.message.content;
+          }
+          if (chunk.done) {
+            return; // Zakończ generator
+          }
+        } catch (e) {
+          console.error('Failed to parse JSON chunk from Ollama stream:', line, e);
+          // Możemy tu zdecydować, czy kontynuować, czy rzucić błąd dalej
+        }
+      }
+    }
+    // Przetworzenie ostatniej, potencjalnie niekompletnej linii
+    if (previousChunkPartialLine.trim() !== '') {
+        try {
+            const chunk = JSON.parse(previousChunkPartialLine) as OllamaResponse;
+            if (chunk.message && chunk.message.content) {
+                yield chunk.message.content;
+            }
+             // Nie sprawdzamy tutaj chunk.done, bo jeśli było done, to poprzednia pętla by się zakończyła
+        } catch(e) {
+            console.error('Failed to parse final JSON chunk from Ollama stream:', previousChunkPartialLine, e);
+        }
+    }
+
   } catch (error) {
-    console.error('Error calling Ollama:', error);
+    console.error('Error in callOllama (stream):', error);
     throw error;
   }
 }
@@ -151,8 +190,9 @@ function generateMarkdownDocument(conversation: ConversationState): string {
 app.post('/api/chat', async (req: Request, res: Response, next: NextFunction) => {
   const { message, sessionId = 'default' } = req.body;
 
+  // Standardowa walidacja - wykonana przed ustawieniem nagłówków SSE
   if (!message && (!conversationStore[sessionId] || conversationStore[sessionId].messages.length <= 1)) {
-      // Initial call or conversation just started
+    // Initial call or conversation just started - pozwólmy na to, pierwszy request może być bez message
   } else if (!message) {
     return res.status(400).json({ error: 'Message is required for subsequent turns' });
   }
@@ -160,36 +200,51 @@ app.post('/api/chat', async (req: Request, res: Response, next: NextFunction) =>
   try {
     const conversation = await getConversation(sessionId);
 
-    if (message) { 
-        conversation.messages.push({ role: 'user', content: message });
+    // Obsługa specjalnych komend przed strumieniowaniem
+    if (message) {
+        conversation.messages.push({ role: 'user', content: message }); // Zapisz wiadomość użytkownika od razu
+
+        if (message.toLowerCase() === 'progress') {
+            const totalSections = conversation.sections.length;
+            const filledSections = Object.keys(conversation.currentDocumentState).filter(key => conversation.currentDocumentState[key]?.trim() !== '').length;
+            const progress = totalSections > 0 ? (filledSections / totalSections) : 0;
+            return res.json({ response: `Current progress: ${Math.round(progress * 100)}%`, progress: progress.toFixed(2) });
+        }
+
+        if (message.toLowerCase() === 'aktualna wersja') {
+            const markdownDocument = generateMarkdownDocument(conversation);
+            return res.json({ response: markdownDocument, isDocument: true });
+        }
+    }
+    
+    // Ustawienie nagłówków dla Server-Sent Events
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*'); // Dla dewelopmentu, jeśli frontend jest na innym porcie
+    res.flushHeaders(); // Wyślij nagłówki natychmiast
+
+    let fullAssistantResponse = '';
+    for await (const token of callOllama(conversation.messages)) {
+      fullAssistantResponse += token;
+      res.write(`data: ${JSON.stringify({ token })}\n\n`);
     }
 
-    if (message && message.toLowerCase() === 'progress') {
-      const totalSections = conversation.sections.length;
-      const filledSections = Object.keys(conversation.currentDocumentState).filter(key => conversation.currentDocumentState[key]?.trim() !== '').length;
-      const progress = totalSections > 0 ? (filledSections / totalSections) : 0;
-      return res.json({ response: `Current progress: ${Math.round(progress * 100)}%`, progress: progress.toFixed(2) });
-    }
+    conversation.messages.push({ role: 'assistant', content: fullAssistantResponse });
 
-    if (message && message.toLowerCase() === 'aktualna wersja') {
-      const markdownDocument = generateMarkdownDocument(conversation);
-      return res.json({ response: markdownDocument, isDocument: true });
-    }
-
-    const ollamaResponseContent = await callOllama(conversation.messages);
-    conversation.messages.push({ role: 'assistant', content: ollamaResponseContent });
-
+    // Logika przetwarzania odpowiedzi i stanu konwersacji - po otrzymaniu całej odpowiedzi
     if (message && conversation.currentSectionIndex < conversation.sections.length) {
         const currentSectionName = conversation.sections[conversation.currentSectionIndex];
-        const aiSeemsToConfirm = /dziękuję|rozumiem|świetnie|dobrze|zapisuję|zanotowałem|przejdźmy|kolejne pytanie|następna sekcja/i.test(ollamaResponseContent);
-        // Make substring robust against short section names
+        // Używamy fullAssistantResponse do logiki
+        const aiSeemsToConfirm = /dziękuję|rozumiem|świetnie|dobrze|zapisuję|zanotowałem|przejdźmy|kolejne pytanie|następna sekcja/i.test(fullAssistantResponse);
         const sectionNameStart = currentSectionName.substring(0, Math.min(5, currentSectionName.length));
-        const aiAsksForSameSection = new RegExp(sectionNameStart, 'i').test(ollamaResponseContent);
+        const aiAsksForSameSection = new RegExp(sectionNameStart, 'i').test(fullAssistantResponse);
 
         if (!aiAsksForSameSection || aiSeemsToConfirm) { 
             const existingContent = conversation.currentDocumentState[currentSectionName] || '';
-            if (!existingContent.includes(message)) { // Avoid duplicating the exact same message
-                 conversation.currentDocumentState[currentSectionName] = (existingContent + message + '\\n').trim() + '\\n';
+            // Zapisujemy oryginalną wiadomość użytkownika (message), a nie odpowiedź AI (fullAssistantResponse)
+            if (message && !existingContent.includes(message)) { // Dodano sprawdzenie czy message istnieje
+                 conversation.currentDocumentState[currentSectionName] = (existingContent + message + '\n').trim() + '\n';
             }
             
             const isLastSection = conversation.currentSectionIndex >= conversation.sections.length - 1;
@@ -205,18 +260,30 @@ app.post('/api/chat', async (req: Request, res: Response, next: NextFunction) =>
     const allSectionsFilled = conversation.sections.every(section => conversation.currentDocumentState[section]?.trim() !== '');
     const isComplete = conversation.currentSectionIndex >= conversation.sections.length - 1 && allSectionsFilled;
 
-    res.json({ 
-        response: ollamaResponseContent,
+    // Wyślij event 'done' z finalnymi danymi
+    res.write(`data: ${JSON.stringify({ 
+        event: 'done', 
+        fullResponse: fullAssistantResponse, // opcjonalnie, jeśli frontend chce też całą odpowiedź na raz
         currentSection: conversation.sections[conversation.currentSectionIndex] || 'Completed',
         isComplete: isComplete
-    });
+    })}\n\n`);
+    
+    res.end(); // Zakończ połączenie SSE
 
   } catch (error) {
-    console.error('Chat API error:', error);
-    if (error instanceof Error) {
-        next(error);
+    console.error('Chat API error (SSE):', error);
+    // Jeśli nagłówki nie zostały jeszcze wysłane, możemy wysłać błąd HTTP
+    if (!res.headersSent) {
+        if (error instanceof Error) {
+            next(error); // Przekaż do standardowego error handlera Express
+        } else {
+            next(new Error('An unknown error occurred in Chat API'));
+        }
     } else {
-        next(new Error('An unknown error occurred in Chat API'));
+        // Jeśli nagłówki zostały wysłane, to jesteśmy w trybie SSE.
+        // Możemy spróbować wysłać event błędu, ale klient może już być rozłączony.
+        res.write(`data: ${JSON.stringify({ error: 'An error occurred on the server.' })}\n\n`);
+        res.end();
     }
   }
 });

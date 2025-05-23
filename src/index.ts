@@ -22,6 +22,11 @@ class ChatBot {
     private finalDocumentContainer: HTMLElement;
     private documentOutput: HTMLElement;
 
+    // New DOM element properties for copy/download
+    private documentActionsContainer: HTMLElement;
+    private copyButton: HTMLButtonElement;
+    private downloadButton: HTMLButtonElement;
+
     constructor() {
         this.chatOutput = document.getElementById('chat-output')!;
         this.userInput = document.getElementById('user-input') as HTMLInputElement;
@@ -29,12 +34,25 @@ class ChatBot {
         this.finalDocumentContainer = document.getElementById('final-document-container')!;
         this.documentOutput = document.getElementById('document-output')!;
 
+        // Get references to new buttons
+        this.documentActionsContainer = document.getElementById('document-actions')!;
+        this.copyButton = document.getElementById('copy-button') as HTMLButtonElement;
+        this.downloadButton = document.getElementById('download-button') as HTMLButtonElement;
+
         this.sendButton.addEventListener('click', () => this.handleUserInput());
         this.userInput.addEventListener('keypress', (event) => {
             if (event.key === 'Enter') {
                 this.handleUserInput();
             }
         });
+
+        // Add event listeners for new buttons
+        if (this.copyButton) {
+            this.copyButton.addEventListener('click', () => this.handleCopyDocument());
+        }
+        if (this.downloadButton) {
+            this.downloadButton.addEventListener('click', () => this.handleDownloadDocument());
+        }
     }
 
     async initialize(): Promise<void> {
@@ -113,9 +131,59 @@ class ChatBot {
             this.finalDocumentContainer.style.display = 'block';
         }
 
+        // Show the document actions (copy/download buttons)
+        if (this.documentActionsContainer) {
+            this.documentActionsContainer.style.display = 'block'; // Or 'flex', 'inline-block' depending on desired layout
+        }
+
         const inputArea = document.getElementById('input-area');
         if (inputArea) {
             inputArea.style.display = 'none';
+        }
+    }
+
+    private handleCopyDocument(): void {
+        if (!navigator.clipboard) {
+            alert('Clipboard API not available. Please copy manually.');
+            return;
+        }
+        navigator.clipboard.writeText(this.documentContent).then(() => {
+            const originalTitle = this.copyButton.title;
+            if (this.copyButton) {
+                this.copyButton.title = 'Copied!';
+                this.copyButton.classList.add('copied'); // For CSS styling feedback
+                this.copyButton.disabled = true;
+            }
+
+            setTimeout(() => {
+                if (this.copyButton) {
+                    this.copyButton.title = originalTitle;
+                    this.copyButton.classList.remove('copied');
+                    this.copyButton.disabled = false;
+                }
+            }, 2000);
+        }).catch(err => {
+            console.error('Failed to copy document: ', err);
+            alert('Failed to copy document. See console for details.');
+        });
+    }
+
+    private handleDownloadDocument(): void {
+        const filename = 'prd_document.md';
+        const blob = new Blob([this.documentContent], { type: 'text/markdown;charset=utf-8;' });
+        
+        const link = document.createElement('a');
+        if (link.download !== undefined) { // Feature detection
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url); // Clean up
+        } else {
+            alert('Download feature not fully supported in this browser. Please copy and save manually.');
         }
     }
 }

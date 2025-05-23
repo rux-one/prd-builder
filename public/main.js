@@ -3,15 +3,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const messageInput = document.getElementById('message-input');
     const sendButton = document.getElementById('send-button');
     const downloadButton = document.getElementById('download-button');
-const spinner = document.getElementById('spinner');
-const currentSectionDisplay = document.getElementById('current-section-display');
+    const spinner = document.getElementById('spinner');
+    const currentSectionDisplay = document.getElementById('current-section-display');
     const progressButton = document.getElementById('progress-button');
     const currentVersionButton = document.getElementById('current-version-button');
 
-    let currentSection = ''; // Declare currentSection here 
+    let currentSection = ''; // Track current section
 
     // For simplicity, using a fixed session ID. In a real app, this would be managed.
-    const sessionId = 'session_' + new Date().getTime(); 
+    const sessionId = 'session_' + new Date().getTime();
 
     function addMessageToChat(sender, message, isMarkdown = false, messageId = null) {
         let messageDiv;
@@ -19,18 +19,17 @@ const currentSectionDisplay = document.getElementById('current-section-display')
             messageDiv = document.getElementById(messageId);
         }
 
-        if (messageDiv) { // Element już istnieje, dopisujemy
+        if (messageDiv) { // Update existing message
             if (isMarkdown) {
                 const pre = messageDiv.querySelector('pre') || document.createElement('pre');
-                pre.textContent += message; // Dopisujemy do istniejącego pre
+                pre.textContent += message;
                 if (!messageDiv.querySelector('pre')) messageDiv.appendChild(pre);
             } else {
-                // Jeśli dopisujemy do zwykłego tekstu, upewnijmy się, że nie tworzymy zagnieżdżonych <pre>
                 const existingPre = messageDiv.querySelector('pre');
                 if (existingPre) existingPre.textContent += message;
-                else messageDiv.textContent += message; // Dopisujemy do textContent
+                else messageDiv.textContent += message;
             }
-        } else { // Tworzymy nowy element
+        } else { // Create new message
             messageDiv = document.createElement('div');
             messageDiv.classList.add('message');
             messageDiv.classList.add(sender === 'user' ? 'user-message' : 'assistant-message');
@@ -72,6 +71,7 @@ const currentSectionDisplay = document.getElementById('current-section-display')
     async function sendMessage(messageText) {
         if (spinner) spinner.style.display = 'inline';
         if (currentSectionDisplay && !messageText) currentSectionDisplay.textContent = 'Aktualna sekcja: Ładowanie...';
+        
         if (!messageText && chatContainer.children.length === 0) {
             // Initial message
         } else if (!messageText?.trim() && chatContainer.children.length > 0) {
@@ -79,7 +79,7 @@ const currentSectionDisplay = document.getElementById('current-section-display')
         }
 
         if (messageText) {
-             addMessageToChat('user', messageText);
+            addMessageToChat('user', messageText);
         }
        
         messageInput.value = '';
@@ -88,8 +88,6 @@ const currentSectionDisplay = document.getElementById('current-section-display')
         messageInput.disabled = true;
 
         let assistantMessageId = null;
-        let firstChunkReceived = false;
-        let isThinking = false; 
 
         try {
             const response = await fetch('/api/chat', {
@@ -108,122 +106,38 @@ const currentSectionDisplay = document.getElementById('current-section-display')
                     throw new Error(`HTTP error! status: ${response.status} ${response.statusText}`);
                 }
             }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let firstTokenProcessed = false;
-
-            while (true) {
-                const { done, value } = await reader.read();
+            
+            // Handle the new JSON response format
+            const data = await response.json();
+            
+            if (spinner) spinner.style.display = 'none';
+            
+            // Handle the response based on the new format
+            if (data.isQuestion) {
+                // This is a question from the system
+                assistantMessageId = 'assistant-msg-' + Date.now();
+                addMessageToChat('assistant', data.message, false, assistantMessageId);
                 
-                if (done) {
-                if (spinner) spinner.style.display = 'none'; // Ensure spinner is hidden at the very end
-                    // Sprawdzenie ostatniego fragmentu w buforze
-                    if (buffer.trim().startsWith('data:')) {
-                        const jsonString = buffer.substring(buffer.indexOf('data:') + 5).trim();
-                        if (jsonString) { // Ensure jsonString is not empty
-                            try {
-                                const parsedData = JSON.parse(jsonString);
-                                if (parsedData.currentSection && currentSectionDisplay) {
-                                    currentSection = parsedData.currentSection;
-                                    currentSectionDisplay.textContent = `Aktualna sekcja: ${currentSection}`;
-                                }
-                                if (parsedData.isComplete) {
-                                    downloadButton.style.display = 'inline-block';
-                                    if (currentSectionDisplay) currentSectionDisplay.textContent = "Dokument ukończony!";
-                                }
-                            } catch (e) {
-                                console.error('Failed to parse final JSON from stream buffer:', jsonString, e);
-                            }
-                        }
-                    }
-                    break; 
+                // Update section display if we have section information
+                if (data.rawQuestion && currentSectionDisplay) {
+                    currentSection = data.rawQuestion;
+                    currentSectionDisplay.textContent = `Aktualna sekcja: ${currentSection}`;
                 }
-                if (!firstChunkReceived && value) { // Check value to ensure it's not an empty chunk signal
-                if (spinner) spinner.style.display = 'none';
-                firstChunkReceived = true;
-            }
-            buffer += decoder.decode(value, { stream: true });
-
-                let newlineIndex;
-                while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
-                    const line = buffer.substring(0, newlineIndex).trim();
-                    buffer = buffer.substring(newlineIndex + 1);
-
-                    if (line.startsWith('data:')) {
-                        const jsonString = line.substring(5);
-                        try {
-                            const parsedData = JSON.parse(jsonString);
-
-                            if (parsedData.error) {
-                                console.error("Error from stream:", parsedData.error);
-                                displayError("Błąd strumienia: " + parsedData.error);
-                                break; 
-                            }
-
-                            if (parsedData.event === 'done') {
-                                console.log('Stream finished:', parsedData);
-                                if (currentSectionDisplay && parsedData.currentSection) {
-                                    currentSectionDisplay.textContent = `Aktualna sekcja: ${parsedData.currentSection}`;
-                                }
-                                if (parsedData.isComplete) {
-                                    downloadButton.style.display = 'inline-block';
-                                    if (currentSectionDisplay) currentSectionDisplay.textContent = "Dokument ukończony!";
-                                }
-                                // Opcjonalnie zaktualizuj ostatnią wiadomość pełną treścią
-                                // if (assistantMessageId && parsedData.fullResponse) {
-                                //    const msgDiv = document.getElementById(assistantMessageId);
-                                //    if (msgDiv) msgDiv.textContent = parsedData.fullResponse; 
-                                // }
-                                return; 
-                            }
-                            
-                            if (parsedData.token) {
-                                let tokenContent = parsedData.token;
-                                let processToken = true;
-
-                                // Handle <think> and </think> tags potentially within the same token or across tokens
-                                while (processToken && tokenContent.length > 0) {
-                                    if (isThinking) {
-                                        const endThinkingIndex = tokenContent.indexOf('</think>');
-                                        if (endThinkingIndex !== -1) {
-                                            isThinking = false;
-                                            tokenContent = tokenContent.substring(endThinkingIndex + '</think>'.length);
-                                            // Continue processing the rest of the token in the next iteration
-                                        } else {
-                                            // Still thinking, discard this part of the token
-                                            tokenContent = ''; 
-                                        }
-                                    } else {
-                                        const startThinkingIndex = tokenContent.indexOf('<think>');
-                                        if (startThinkingIndex !== -1) {
-                                            // Add content before <think>
-                                            const beforeThinking = tokenContent.substring(0, startThinkingIndex);
-                                            if (beforeThinking) {
-                                                if (!assistantMessageId) assistantMessageId = 'assistant-msg-' + Date.now();
-                                                addMessageToChat('assistant', beforeThinking, false, assistantMessageId);
-                                            }
-                                            isThinking = true;
-                                            tokenContent = tokenContent.substring(startThinkingIndex + '<think>'.length);
-                                             // Continue processing the rest of the token (after <think>) in the next iteration
-                                        } else {
-                                            // No thinking tags, add the whole token
-                                            if (tokenContent) {
-                                                if (!assistantMessageId) assistantMessageId = 'assistant-msg-' + Date.now();
-                                                addMessageToChat('assistant', tokenContent, false, assistantMessageId);
-                                            }
-                                            tokenContent = ''; // Mark as processed
-                                        }
-                                    }
-                                }
-                                firstTokenProcessed = true;
-                            }
-                        } catch (e) {
-                            console.error('Failed to parse JSON from stream line:', jsonString, e);
-                        }
-                    }
+            } else if (data.allQuestionsAnswered) {
+                // All questions have been answered
+                assistantMessageId = 'assistant-msg-' + Date.now();
+                addMessageToChat('assistant', data.message, false, assistantMessageId);
+                
+                if (currentSectionDisplay) {
+                    currentSectionDisplay.textContent = 'Dokument ukończony!';
                 }
+                
+                // Show download button if all questions are answered
+                downloadButton.style.display = 'inline-block';
+            } else {
+                // Regular response
+                assistantMessageId = 'assistant-msg-' + Date.now();
+                addMessageToChat('assistant', data.message || 'Otrzymano odpowiedź bez treści', false, assistantMessageId);
             }
         } catch (error) {
             console.error('Error sending message:', error);
@@ -238,28 +152,26 @@ const currentSectionDisplay = document.getElementById('current-section-display')
         }
     }
 
-    if (sendButton) { // Check if sendButton exists
+    if (sendButton) {
         sendButton.addEventListener('click', () => sendMessage(messageInput.value));
     }
-    if (messageInput) { // Check if messageInput exists
+    if (messageInput) {
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
-            sendMessage(messageInput.value);
-        }
-    });
+                sendMessage(messageInput.value);
+            }
+        });
     }
 
     async function handleSpecialCommand(command) {
-        // command parameter is already correct from previous changes
         if (spinner) spinner.style.display = 'inline';
         // Preserve current section display if already set
         if (currentSectionDisplay && currentSection && currentSectionDisplay.textContent.startsWith('Aktualna sekcja:')) {
-            // no change, or spinner text will overwrite it briefly
+            // no change
         } else if (currentSectionDisplay) {
             currentSectionDisplay.textContent = 'Przetwarzanie komendy...';
         }
-        if (sendButton) sendButton.disabled = true;
-        if (messageInput) messageInput.disabled = true;
+        
         addMessageToChat('user', command);
         messageInput.value = ''; // Clear input field 
         clearError();
@@ -267,64 +179,63 @@ const currentSectionDisplay = document.getElementById('current-section-display')
         messageInput.disabled = true;
         
         try {
-            const response = await fetch('/api/chat', {
+            const response = await fetch('/api/command', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: command, sessionId: sessionId }),
+                body: JSON.stringify({ command, sessionId }),
             });
+            
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.error || errorData.message || `HTTP error! status: ${response.status}`);
             }
+            
             const data = await response.json();
-            // Te komendy zwracają JSON, nie strumień.
-            // Tworzymy nowy dymek dla odpowiedzi, a nie aktualizujemy istniejący.
+            
+            // Create new message for the response
             const newAssistantMsgId = 'assistant-cmd-msg-' + Date.now();
-            if (data.isDocument) {
-                addMessageToChat('assistant', data.response, true, newAssistantMsgId);
-            } else {
-                addMessageToChat('assistant', data.response, false, newAssistantMsgId);
-            }
-
-            if (currentSectionDisplay && data.currentSection) {
-                 currentSectionDisplay.textContent = `Aktualna sekcja: ${data.currentSection}`;
-            }
-            if (data.progress && currentSectionDisplay) { // Specjalnie dla progress
-                currentSectionDisplay.textContent = `Postęp: ${Math.round(parseFloat(data.progress) * 100)}% (Sekcja: ${data.currentSection || 'Brak'})`;
-            }
-            if (data.isComplete) {
+            if (data.document) {
+                // This is a document response
+                addMessageToChat('assistant', data.document, true, newAssistantMsgId);
+                
+                if (currentSectionDisplay) {
+                    currentSectionDisplay.textContent = 'Dokument ukończony!';
+                }
+                
+                // Show download button
                 downloadButton.style.display = 'inline-block';
-                 if (currentSectionDisplay) currentSectionDisplay.textContent = "Dokument ukończony!";
+            } else {
+                // Regular response
+                addMessageToChat('assistant', data.message || 'Otrzymano odpowiedź bez treści', false, newAssistantMsgId);
             }
-
         } catch (error) {
             console.error(`Error with command ${command}:`, error);
             addMessageToChat('assistant', `Błąd podczas wykonywania komendy "${command}": ${error.message}`, false);
             if (currentSectionDisplay && currentSection) currentSectionDisplay.textContent = `Aktualna sekcja: ${currentSection}`; // Restore section
             else if (currentSectionDisplay) currentSectionDisplay.textContent = 'Błąd komendy.';
-            if (spinner) spinner.style.display = 'none';
         } finally {
+            if (spinner) spinner.style.display = 'none';
             sendButton.disabled = false;
             messageInput.disabled = false;
             messageInput.focus();
         }
     }
 
-if (progressButton) {
-    progressButton.addEventListener('click', () => handleSpecialCommand('progress'));
-}
+    if (progressButton) {
+        progressButton.addEventListener('click', () => handleSpecialCommand('/progress'));
+    }
 
-if (currentVersionButton) {
-    currentVersionButton.addEventListener('click', () => handleSpecialCommand('aktualna wersja'));
-}
+    if (currentVersionButton) {
+        currentVersionButton.addEventListener('click', () => handleSpecialCommand('/show_document'));
+    }
 
-if (downloadButton) {
-    downloadButton.addEventListener('click', () => {
-        window.location.href = `/api/document/download?sessionId=${sessionId}`;
-    });
-}
+    if (downloadButton) {
+        downloadButton.addEventListener('click', () => {
+            window.location.href = `/api/document/${sessionId}`;
+        });
+    }
 
-// Initial message to get the first question from the assistant
-if (currentSectionDisplay) currentSectionDisplay.textContent = 'Aktualna sekcja: Ładowanie...';
-sendMessage('Zaczynajmy'); 
+    // Initial message to get the first question from the assistant
+    if (currentSectionDisplay) currentSectionDisplay.textContent = 'Aktualna sekcja: Ładowanie...';
+    sendMessage(''); 
 });

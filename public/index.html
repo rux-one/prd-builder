@@ -1,6 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <script type="importmap">
+    {
+      "imports": {
+        "marked": "https://cdn.jsdelivr.net/npm/marked@13.0.2/lib/marked.esm.js"
+      }
+    }
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PRD Builder Chat</title>
@@ -36,5 +43,5 @@
         <div id="document-output"></div>
     </div>
 
-    <script src="dist/index.js"></script> </body>
+    <script type="module" src="dist/index.js"></script> </body>
 </html>

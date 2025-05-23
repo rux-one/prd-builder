@@ -4,7 +4,7 @@ services:
   prd_builder_app:
     build: .
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:3000"
     volumes:
       - ./system_message.md:/app/system_message.md # Mount the system message for easy updates
       # You might want to add a volume for logs or other persistent data if needed in the future
